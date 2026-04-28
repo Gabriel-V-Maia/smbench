@@ -9,7 +9,7 @@
 #include <sys/user.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
-#include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <linux/perf_event.h>
 #include <asm/unistd.h>
 #include <time.h>
@@ -105,7 +105,7 @@ static int open_perf(uint32_t type, uint64_t config, pid_t pid) {
 
 static uint64_t read_perf(int fd) {
     uint64_t v = 0;
-    if (fd >= 0) read(fd, &v, sizeof(v));
+    if (fd >= 0) { if (read(fd, &v, sizeof(v)) < 0) v = 0; }
     return v;
 }
 
@@ -156,8 +156,8 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr,
             BOLD "usage:\n" RST
-            "  bench " YEL "<source.c>" RST " [gcc flags]   — compile + bench\n"
-            "  bench " YEL "<binary>"   RST " [args...]     — bench existing binary\n\n");
+            "  bench " YEL "<src1.c> [src2.c ...]" RST " [-- flags]  — compile + bench\n"
+            "  bench " YEL "<binary>" RST " [args...]               — bench existing binary\n\n");
         return 1;
     }
 
@@ -169,20 +169,33 @@ int main(int argc, char **argv) {
     if (is_source(argv[1])) {
         snprintf(binary, sizeof(binary), "/tmp/bench_bin_%d", getpid());
 
-        char **gcc_argv = malloc((argc + 8) * sizeof(char *));
+        int    n_sources = 0;
+        int    sep       = -1;
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--") == 0) { sep = i; break; }
+            if (is_source(argv[i])) n_sources++;
+            else break;
+        }
+
+        int n_flags = (sep >= 0) ? argc - sep - 1 : 0;
+        char **gcc_argv = malloc((n_sources + n_flags + 8) * sizeof(char *));
         int gi = 0;
         gcc_argv[gi++] = "gcc";
         gcc_argv[gi++] = "-g3";
         gcc_argv[gi++] = "-O0";
         gcc_argv[gi++] = "-fno-omit-frame-pointer";
         gcc_argv[gi++] = "-rdynamic";
-        for (int i = 2; i < argc; i++) gcc_argv[gi++] = argv[i];
         gcc_argv[gi++] = "-o"; gcc_argv[gi++] = binary;
-        gcc_argv[gi++] = argv[1];
-        gcc_argv[gi]   = NULL;
+        for (int i = 1; i <= n_sources; i++) gcc_argv[gi++] = argv[i];
+        for (int i = 0; i < n_flags; i++)    gcc_argv[gi++] = argv[sep + 1 + i];
+        gcc_argv[gi] = NULL;
 
-        printf(BOLD CYN "\n  compiling " RST "%s " DIM "→" RST " %s\n", argv[1], binary);
-        printf(DIM "  flags: -g3 -O0 -fno-omit-frame-pointer -rdynamic\n\n" RST);
+        printf(BOLD CYN "\n  compiling" RST);
+        for (int i = 1; i <= n_sources; i++) printf(" %s", argv[i]);
+        printf(" " DIM "→" RST " %s\n", binary);
+        printf(DIM "  flags: -g3 -O0 -fno-omit-frame-pointer -rdynamic");
+        for (int i = 0; i < n_flags; i++) printf(" %s", argv[sep + 1 + i]);
+        printf("\n\n" RST);
 
         pid_t cp = fork();
         if (cp == 0) { execvp("gcc", gcc_argv); perror("gcc"); exit(1); }
@@ -196,7 +209,7 @@ int main(int argc, char **argv) {
         }
         printf(GRN "  compiled ok\n\n" RST);
 
-        child_argv    = malloc(3 * sizeof(char *));
+        child_argv    = malloc(2 * sizeof(char *));
         child_argv[0] = binary;
         child_argv[1] = NULL;
         child_argc    = 1;
