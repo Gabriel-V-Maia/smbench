@@ -18,7 +18,6 @@
 #include <math.h>
 
 #define MAX_SYSCALLS     512
-#define MAX_FUNC_SAMPLES 65536
 
 #define RST   "\033[0m"
 #define BOLD  "\033[1m"
@@ -36,45 +35,45 @@ typedef struct { SyscallStat e[MAX_SYSCALLS]; size_t n; } SyscallTable;
 
 static const char *syscall_name(long nr) {
     switch (nr) {
-        case SYS_read:           return "read";
-        case SYS_write:          return "write";
-        case SYS_open:           return "open";
-        case SYS_close:          return "close";
-        case SYS_stat:           return "stat";
-        case SYS_fstat:          return "fstat";
-        case SYS_lstat:          return "lstat";
-        case SYS_mmap:           return "mmap";
-        case SYS_mprotect:       return "mprotect";
-        case SYS_munmap:         return "munmap";
-        case SYS_brk:            return "brk";
-        case SYS_rt_sigaction:   return "rt_sigaction";
-        case SYS_rt_sigprocmask: return "rt_sigprocmask";
-        case SYS_ioctl:          return "ioctl";
-        case SYS_access:         return "access";
-        case SYS_execve:         return "execve";
-        case SYS_exit:           return "exit";
-        case SYS_exit_group:     return "exit_group";
-        case SYS_openat:         return "openat";
-        case SYS_newfstatat:     return "newfstatat";
-        case SYS_pread64:        return "pread64";
-        case SYS_pwrite64:       return "pwrite64";
-        case SYS_futex:          return "futex";
-        case SYS_clock_gettime:  return "clock_gettime";
-        case SYS_getpid:         return "getpid";
-        case SYS_getuid:         return "getuid";
-        case SYS_gettid:         return "gettid";
-        case SYS_lseek:          return "lseek";
-        case SYS_socket:         return "socket";
-        case SYS_connect:        return "connect";
-        case SYS_sendto:         return "sendto";
-        case SYS_recvfrom:       return "recvfrom";
-        case SYS_nanosleep:      return "nanosleep";
-        case SYS_poll:           return "poll";
-        case SYS_select:         return "select";
+        case SYS_read:            return "read";
+        case SYS_write:           return "write";
+        case SYS_open:            return "open";
+        case SYS_close:           return "close";
+        case SYS_stat:            return "stat";
+        case SYS_fstat:           return "fstat";
+        case SYS_lstat:           return "lstat";
+        case SYS_mmap:            return "mmap";
+        case SYS_mprotect:        return "mprotect";
+        case SYS_munmap:          return "munmap";
+        case SYS_brk:             return "brk";
+        case SYS_rt_sigaction:    return "rt_sigaction";
+        case SYS_rt_sigprocmask:  return "rt_sigprocmask";
+        case SYS_ioctl:           return "ioctl";
+        case SYS_access:          return "access";
+        case SYS_execve:          return "execve";
+        case SYS_exit:            return "exit";
+        case SYS_exit_group:      return "exit_group";
+        case SYS_openat:          return "openat";
+        case SYS_newfstatat:      return "newfstatat";
+        case SYS_pread64:         return "pread64";
+        case SYS_pwrite64:        return "pwrite64";
+        case SYS_futex:           return "futex";
+        case SYS_clock_gettime:   return "clock_gettime";
+        case SYS_getpid:          return "getpid";
+        case SYS_getuid:          return "getuid";
+        case SYS_gettid:          return "gettid";
+        case SYS_lseek:           return "lseek";
+        case SYS_socket:          return "socket";
+        case SYS_connect:         return "connect";
+        case SYS_sendto:          return "sendto";
+        case SYS_recvfrom:        return "recvfrom";
+        case SYS_nanosleep:       return "nanosleep";
+        case SYS_poll:            return "poll";
+        case SYS_select:          return "select";
         case SYS_set_tid_address: return "set_tid_address";
         case SYS_set_robust_list: return "set_robust_list";
-        case SYS_prlimit64:      return "prlimit64";
-        case SYS_getrandom:      return "getrandom";
+        case SYS_prlimit64:       return "prlimit64";
+        case SYS_getrandom:       return "getrandom";
         default: {
             static char buf[32];
             snprintf(buf, sizeof(buf), "syscall_%ld", nr);
@@ -92,20 +91,31 @@ static SyscallStat *find_or_create(SyscallTable *t, long nr) {
     return s;
 }
 
+
 static long perf_open(struct perf_event_attr *attr, pid_t pid) {
     return syscall(__NR_perf_event_open, attr, pid, -1, -1, 0);
 }
 
+/*
+ * Try opening a perf counter.
+ * On WSL / paranoid kernels, PERF_TYPE_HARDWARE counters fail with ENODEV,
+ * EPERM or EOPNOTSUPP.  We return -1 on failure; callers check for it.
+ */
 static int open_perf(uint32_t type, uint64_t config, pid_t pid) {
     struct perf_event_attr a = {0};
-    a.type = type; a.size = sizeof(a); a.config = config;
-    a.disabled = 1; a.exclude_hv = 1;
-    return (int)perf_open(&a, pid);
+    a.type        = type;
+    a.size        = sizeof(a);
+    a.config      = config;
+    a.disabled    = 1;
+    a.exclude_hv  = 1;
+    int fd = (int)perf_open(&a, pid);
+    if (fd < 0) return -1;
+    return fd;
 }
 
 static uint64_t read_perf(int fd) {
     uint64_t v = 0;
-    if (fd >= 0) { if (read(fd, &v, sizeof(v)) < 0) v = 0; }
+    if (fd >= 0 && read(fd, &v, sizeof(v)) < 0) v = 0;
     return v;
 }
 
@@ -114,6 +124,7 @@ static void perf_ctrl(int fd, int enable) {
     ioctl(fd, enable ? PERF_EVENT_IOC_ENABLE : PERF_EVENT_IOC_DISABLE, 0);
     if (enable) ioctl(fd, PERF_EVENT_IOC_RESET, 0);
 }
+
 
 static double ns_now(void) {
     struct timespec ts;
@@ -139,18 +150,41 @@ static void fmt_count(uint64_t v, char *out) {
     if      (v >= 1000000000) sprintf(out, "%.2fG", v / 1e9);
     else if (v >= 1000000)    sprintf(out, "%.2fM", v / 1e6);
     else if (v >= 1000)       sprintf(out, "%.2fK", v / 1e3);
-    else                      sprintf(out, "%lu",   v);
+    else                      sprintf(out, "%lu",   (unsigned long)v);
 }
 
 static int is_source(const char *path) {
     const char *dot = strrchr(path, '.');
-    return dot && (strcmp(dot, ".c") == 0 || strcmp(dot, ".cpp") == 0 ||
-                   strcmp(dot, ".cc") == 0 || strcmp(dot, ".cxx") == 0);
+    return dot && (strcmp(dot, ".c")   == 0 || strcmp(dot, ".cpp") == 0 ||
+                   strcmp(dot, ".cc")  == 0 || strcmp(dot, ".cxx") == 0);
 }
 
 static int cmp_sc(const void *a, const void *b) {
-    return (int)(((SyscallStat *)b)->count - ((SyscallStat *)a)->count);
+    const SyscallStat *sa = a, *sb = b;
+    if (sb->count > sa->count) return  1;
+    if (sb->count < sa->count) return -1;
+    return 0;
 }
+
+static int pmu_available(int *hw_fds, int n_hw,
+                          uint64_t *vals,  int n_vals) {
+    int any_open = 0;
+    for (int i = 0; i < n_hw; i++)
+        if (hw_fds[i] >= 0) { any_open = 1; break; }
+    if (!any_open) return 0;
+
+    uint64_t sum = 0;
+    for (int i = 0; i < n_vals; i++) sum += vals[i];
+    return sum != 0;
+}
+
+static void pmu_unavailable_notice(void) {
+    printf("    " YEL "⚠  hardware PMU counters unavailable" RST "\n");
+    printf("    " DIM "   WSL: kernel does not expose CPU performance counters.\n");
+    printf("       Fedora/Linux: run as root, or lower paranoid level:\n");
+    printf("         sudo sysctl kernel.perf_event_paranoid=1\n" RST);
+}
+
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -161,16 +195,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    char binary[512] = {0};
+    char  binary[512] = {0};
     char **child_argv;
-    int    child_argc;
     int    compiled = 0;
 
     if (is_source(argv[1])) {
         snprintf(binary, sizeof(binary), "/tmp/bench_bin_%d", getpid());
 
-        int    n_sources = 0;
-        int    sep       = -1;
+        int n_sources = 0, sep = -1;
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "--") == 0) { sep = i; break; }
             if (is_source(argv[i])) n_sources++;
@@ -199,8 +231,7 @@ int main(int argc, char **argv) {
 
         pid_t cp = fork();
         if (cp == 0) { execvp("gcc", gcc_argv); perror("gcc"); exit(1); }
-        int cst;
-        waitpid(cp, &cst, 0);
+        int cst; waitpid(cp, &cst, 0);
         free(gcc_argv);
 
         if (!WIFEXITED(cst) || WEXITSTATUS(cst) != 0) {
@@ -212,18 +243,14 @@ int main(int argc, char **argv) {
         child_argv    = malloc(2 * sizeof(char *));
         child_argv[0] = binary;
         child_argv[1] = NULL;
-        child_argc    = 1;
         compiled      = 1;
     } else {
         strncpy(binary, argv[1], sizeof(binary) - 1);
         child_argv = &argv[1];
-        child_argc = argc - 1;
-        (void)child_argc;
     }
 
     pid_t pid = fork();
     if (pid < 0) { perror("fork"); return 1; }
-
     if (pid == 0) {
         ptrace(PTRACE_TRACEME, 0, NULL, NULL);
         execvp(child_argv[0], child_argv);
@@ -241,22 +268,24 @@ int main(int argc, char **argv) {
     int fd_br    = open_perf(PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_INSTRUCTIONS,     pid);
     int fd_brmis = open_perf(PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES,           pid);
     int fd_stall = open_perf(PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_FRONTEND, pid);
-    int fd_ctx   = open_perf(PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CONTEXT_SWITCHES,        pid);
-    int fd_fault = open_perf(PERF_TYPE_SOFTWARE, PERF_COUNT_SW_PAGE_FAULTS,             pid);
-    int fd_migr  = open_perf(PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CPU_MIGRATIONS,          pid);
+    /* software counters — these should work on wsl */
+    int fd_ctx   = open_perf(PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CONTEXT_SWITCHES, pid);
+    int fd_fault = open_perf(PERF_TYPE_SOFTWARE, PERF_COUNT_SW_PAGE_FAULTS,      pid);
+    int fd_migr  = open_perf(PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CPU_MIGRATIONS,   pid);
 
-    int fds[] = { fd_cyc, fd_ins, fd_cref, fd_cmis, fd_br, fd_brmis, fd_stall, fd_ctx, fd_fault, fd_migr };
-    for (int i = 0; i < 10; i++) perf_ctrl(fds[i], 1);
+    int hw_fds[] = { fd_cyc, fd_ins, fd_cref, fd_cmis, fd_br, fd_brmis, fd_stall };
+    int sw_fds[] = { fd_ctx, fd_fault, fd_migr };
+    for (int i = 0; i < 7; i++) perf_ctrl(hw_fds[i], 1);
+    for (int i = 0; i < 3; i++) perf_ctrl(sw_fds[i], 1);
 
     ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACESYSGOOD);
 
-    SyscallTable table   = {0};
-    double wall_start    = ns_now();
-    int    in_syscall    = 0;
-    long   current_nr    = -1;
-    double sc_enter      = 0;
-    size_t total_sc      = 0;
-
+    SyscallTable table  = {0};
+    double wall_start   = ns_now();
+    int    in_syscall   = 0;
+    long   current_nr   = -1;
+    double sc_enter     = 0;
+    size_t total_sc     = 0;
     unsigned long brk_base = 0, brk_peak = 0, brk_cur = 0;
 
     while (1) {
@@ -283,7 +312,6 @@ int main(int argc, char **argv) {
                     brk_cur = ret;
                     if (brk_cur > brk_peak) brk_peak = brk_cur;
                 }
-
                 in_syscall = 0;
             }
         }
@@ -292,7 +320,8 @@ int main(int argc, char **argv) {
     double wall_ns = ns_now() - wall_start;
     int exit_code  = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 
-    for (int i = 0; i < 10; i++) perf_ctrl(fds[i], 0);
+    for (int i = 0; i < 7; i++) perf_ctrl(hw_fds[i], 0);
+    for (int i = 0; i < 3; i++) perf_ctrl(sw_fds[i], 0);
 
     uint64_t cyc   = read_perf(fd_cyc);
     uint64_t ins   = read_perf(fd_ins);
@@ -304,6 +333,14 @@ int main(int argc, char **argv) {
     uint64_t ctx   = read_perf(fd_ctx);
     uint64_t fault = read_perf(fd_fault);
     uint64_t migr  = read_perf(fd_migr);
+
+    /* close all fds */
+    int all_fds[] = { fd_cyc, fd_ins, fd_cref, fd_cmis, fd_br,
+                      fd_brmis, fd_stall, fd_ctx, fd_fault, fd_migr };
+    for (int i = 0; i < 10; i++) if (all_fds[i] >= 0) close(all_fds[i]);
+
+    uint64_t hw_vals[] = { cyc, ins, cref, cmis, br, brmis, stall };
+    int pmu_ok = pmu_available(hw_fds, 7, hw_vals, 7);
 
     struct rusage ru;
     getrusage(RUSAGE_CHILDREN, &ru);
@@ -321,12 +358,15 @@ int main(int argc, char **argv) {
     bar(sys_ms / (wall_ms + 0.001), 24, MAG);
     printf("  " MAG "%.1f%%" RST "\n", sys_ms / (wall_ms + 0.001) * 100);
 
+
     section("cpu");
-    char buf[32];
-    fmt_count(cyc,   buf); printf("    cycles          %s%18s%s\n", CYN, buf, RST);
-    fmt_count(ins,   buf); printf("    instructions    %s%18s%s\n", CYN, buf, RST);
-    fmt_count(stall, buf); printf("    stalled cycles  %s%18s%s\n", RED, buf, RST);
-    if (cyc > 0) {
+    if (!pmu_ok) {
+        pmu_unavailable_notice();
+    } else {
+        char buf[32];
+        fmt_count(cyc,   buf); printf("    cycles          %s%18s%s\n", CYN, buf, RST);
+        fmt_count(ins,   buf); printf("    instructions    %s%18s%s\n", CYN, buf, RST);
+        fmt_count(stall, buf); printf("    stalled cycles  %s%18s%s\n", RED, buf, RST);
         double ipc = (double)ins / cyc;
         printf("    IPC             %s%18.3f%s  ", GRN, ipc, RST);
         bar(ipc / 4.0, 24, GRN); printf("\n");
@@ -335,55 +375,73 @@ int main(int argc, char **argv) {
     }
 
     section("cache");
-    fmt_count(cref, buf); printf("    references      %s%18s%s\n", CYN, buf, RST);
-    fmt_count(cmis, buf); printf("    misses          %s%18s%s\n", RED, buf, RST);
-    if (cref > 0) {
-        double mr = (double)cmis / cref;
-        printf("    miss rate       ");
-        bar(mr, 24, mr > 0.1 ? RED : GRN);
-        printf("  %s%.2f%%%s\n", mr > 0.1 ? RED : GRN, mr * 100, RST);
+    if (!pmu_ok) {
+        pmu_unavailable_notice();
+    } else {
+        char buf[32];
+        fmt_count(cref, buf); printf("    references      %s%18s%s\n", CYN, buf, RST);
+        fmt_count(cmis, buf); printf("    misses          %s%18s%s\n", RED, buf, RST);
+        if (cref > 0) {
+            double mr = (double)cmis / cref;
+            printf("    miss rate       ");
+            bar(mr, 24, mr > 0.1 ? RED : GRN);
+            printf("  %s%.2f%%%s\n", mr > 0.1 ? RED : GRN, mr * 100, RST);
+        }
     }
 
     section("branches");
-    fmt_count(br,    buf); printf("    total           %s%18s%s\n", CYN, buf, RST);
-    fmt_count(brmis, buf); printf("    mispredicted    %s%18s%s\n", RED, buf, RST);
-    if (br > 0) {
-        double bm = (double)brmis / br;
-        printf("    miss rate       ");
-        bar(bm, 24, bm > 0.05 ? RED : GRN);
-        printf("  %s%.2f%%%s\n", bm > 0.05 ? RED : GRN, bm * 100, RST);
+    if (!pmu_ok) {
+        pmu_unavailable_notice();
+    } else {
+        char buf[32];
+        fmt_count(br,    buf); printf("    total           %s%18s%s\n", CYN, buf, RST);
+        fmt_count(brmis, buf); printf("    mispredicted    %s%18s%s\n", RED, buf, RST);
+        if (br > 0) {
+            double bm = (double)brmis / br;
+            printf("    miss rate       ");
+            bar(bm, 24, bm > 0.05 ? RED : GRN);
+            printf("  %s%.2f%%%s\n", bm > 0.05 ? RED : GRN, bm * 100, RST);
+        }
     }
 
+    /* ── memory ─────────────────────────────────────────────────── */
     section("memory");
-    printf("    max rss         %s%15ld KB%s\n", CYN, ru.ru_maxrss, RST);
-    if (brk_peak > brk_base)
-        printf("    heap peak       %s%15lu KB%s\n", CYN, (brk_peak - brk_base) / 1024, RST);
-    fmt_count(fault, buf); printf("    page faults     %s%18s%s\n", fault > 100 ? RED : CYN, buf, RST);
-    printf("    minor faults    %s%18lu%s\n", CYN, ru.ru_minflt, RST);
-    printf("    major faults    %s%18lu%s\n", ru.ru_majflt > 0 ? RED : CYN, ru.ru_majflt, RST);
-    printf("    voluntary ctx   %s%18lu%s\n", CYN, ru.ru_nvcsw, RST);
-    printf("    involuntary ctx %s%18lu%s\n", ru.ru_nivcsw > 100 ? RED : CYN, ru.ru_nivcsw, RST);
-    fmt_count(ctx,  buf); printf("    ctx switches    %s%18s%s\n", CYN, buf, RST);
-    fmt_count(migr, buf); printf("    cpu migrations  %s%18s%s\n", migr > 0 ? YEL : CYN, buf, RST);
-    printf("    reclaimed       %s%15lu KB%s\n", CYN, ru.ru_idrss + ru.ru_isrss, RST);
+    {
+        char buf[32];
+        printf("    max rss         %s%15ld KB%s\n", CYN, ru.ru_maxrss, RST);
+        if (brk_peak > brk_base)
+            printf("    heap peak       %s%15lu KB%s\n",
+                   CYN, (brk_peak - brk_base) / 1024, RST);
+        fmt_count(fault, buf);
+        printf("    page faults     %s%18s%s\n", fault > 100 ? RED : CYN, buf, RST);
+        printf("    minor faults    %s%18lu%s\n", CYN, ru.ru_minflt, RST);
+        printf("    major faults    %s%18lu%s\n",
+               ru.ru_majflt > 0 ? RED : CYN, ru.ru_majflt, RST);
+        printf("    voluntary ctx   %s%18lu%s\n", CYN, ru.ru_nvcsw, RST);
+        printf("    involuntary ctx %s%18lu%s\n",
+               ru.ru_nivcsw > 100 ? RED : CYN, ru.ru_nivcsw, RST);
+        fmt_count(ctx,  buf);
+        printf("    ctx switches    %s%18s%s\n", CYN, buf, RST);
+        fmt_count(migr, buf);
+        printf("    cpu migrations  %s%18s%s\n", migr > 0 ? YEL : CYN, buf, RST);
+        printf("    reclaimed       %s%15lu KB%s\n",
+               CYN, ru.ru_idrss + ru.ru_isrss, RST);
+    }
 
     section("syscalls");
     qsort(table.e, table.n, sizeof(SyscallStat), cmp_sc);
 
     size_t max_c = table.n > 0 ? table.e[0].count : 1;
-    double max_t = 0;
-    for (size_t i = 0; i < table.n; i++)
-        if (table.e[i].total_ns > max_t) max_t = table.e[i].total_ns;
 
     printf("    %-22s  %7s  %11s  %10s\n", "name", "calls", "total µs", "avg µs");
     printf("    %-22s  %7s  %11s  %10s\n",
            "──────────────────────", "───────", "───────────", "──────────");
 
     for (size_t i = 0; i < table.n; i++) {
-        SyscallStat *s  = &table.e[i];
-        double tot_us   = s->total_ns / 1e3;
-        double avg_us   = tot_us / s->count;
-        double ratio    = (double)s->count / max_c;
+        SyscallStat *s = &table.e[i];
+        double tot_us  = s->total_ns / 1e3;
+        double avg_us  = tot_us / s->count;
+        double ratio   = (double)s->count / max_c;
         const char *col = avg_us > 1000 ? RED : avg_us > 100 ? YEL : GRN;
 
         printf("    " CYN "%-22s" RST "  %7zu  %11.2f  %s%10.3f" RST "  ",
@@ -391,26 +449,42 @@ int main(int argc, char **argv) {
         bar(ratio, 14, col);
         printf("\n");
     }
-
     printf("\n    total  " BOLD "%zu" RST "\n", total_sc);
 
     section("score");
-    double ipc_score     = cyc > 0 ? fmin((double)ins / cyc / 4.0, 1.0) * 25 : 0;
-    double cache_score   = cref > 0 ? (1.0 - fmin((double)cmis / cref, 1.0)) * 25 : 25;
-    double branch_score  = br > 0 ? (1.0 - fmin((double)brmis / br, 1.0)) * 25 : 25;
-    double syscall_score = total_sc < 100 ? 25 : total_sc < 1000 ? 20 : total_sc < 10000 ? 12 : 5;
-    double total_score   = ipc_score + cache_score + branch_score + syscall_score;
-    const char *grade    = total_score > 85 ? GRN "A" : total_score > 70 ? GRN "B" :
-                           total_score > 55 ? YEL "C" : total_score > 40 ? YEL "D" : RED "F";
 
-    printf("    ipc         "); bar(ipc_score    / 25, 24, GRN); printf("  %.1f/25\n", ipc_score);
-    printf("    cache       "); bar(cache_score  / 25, 24, CYN); printf("  %.1f/25\n", cache_score);
-    printf("    branches    "); bar(branch_score / 25, 24, MAG); printf("  %.1f/25\n", branch_score);
-    printf("    syscalls    "); bar(syscall_score/ 25, 24, YEL); printf("  %.1f/25\n", syscall_score);
-    printf("\n    overall  " BOLD "%s%.0f/100" RST "  grade " BOLD "%s" RST "\n\n",
-           total_score > 70 ? GRN : total_score > 40 ? YEL : RED, total_score, grade);
+    if (!pmu_ok) {
+        /* partial score: only syscalls (25 pts) + note */
+        double syscall_score = total_sc < 100  ? 25 :
+                               total_sc < 1000 ? 20 :
+                               total_sc < 10000? 12 : 5;
+        printf("    " YEL "note: CPU/cache/branch scores require hardware PMU\n" RST);
+        printf("    syscalls    "); bar(syscall_score / 25, 24, YEL);
+        printf("  %.1f/25\n", syscall_score);
+        printf("\n    overall  " BOLD YEL "%.0f/25" RST
+               "  (full score unavailable — PMU counters missing)\n\n",
+               syscall_score);
+    } else {
+        double ipc_score     = fmin((double)ins / cyc / 4.0, 1.0) * 25;
+        double cache_score   = cref > 0 ? (1.0 - fmin((double)cmis / cref, 1.0)) * 25 : 25;
+        double branch_score  = br   > 0 ? (1.0 - fmin((double)brmis / br,  1.0)) * 25 : 25;
+        double syscall_score = total_sc < 100  ? 25 :
+                               total_sc < 1000 ? 20 :
+                               total_sc < 10000? 12 : 5;
+        double total_score   = ipc_score + cache_score + branch_score + syscall_score;
+        const char *grade    = total_score > 85 ? GRN "A" :
+                               total_score > 70 ? GRN "B" :
+                               total_score > 55 ? YEL "C" :
+                               total_score > 40 ? YEL "D" : RED "F";
+
+        printf("    ipc         "); bar(ipc_score    / 25, 24, GRN); printf("  %.1f/25\n", ipc_score);
+        printf("    cache       "); bar(cache_score  / 25, 24, CYN); printf("  %.1f/25\n", cache_score);
+        printf("    branches    "); bar(branch_score / 25, 24, MAG); printf("  %.1f/25\n", branch_score);
+        printf("    syscalls    "); bar(syscall_score/ 25, 24, YEL); printf("  %.1f/25\n", syscall_score);
+        printf("\n    overall  " BOLD "%s%.0f/100" RST "  grade " BOLD "%s" RST "\n\n",
+               total_score > 70 ? GRN : total_score > 40 ? YEL : RED, total_score, grade);
+    }
 
     if (compiled) unlink(binary);
-
     return 0;
 }
